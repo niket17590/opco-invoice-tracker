@@ -1,0 +1,103 @@
+.shell {
+  display: flex;
+  height: 100vh;
+  background: var(--linen);
+}
+
+/* ── SIDEBAR ──────────────────────────────────────────── */
+.sidebar {
+  width: 52px;
+  min-width: 52px;
+  background: var(--sage-dark);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+  gap: 2px;
+}
+
+.logo {
+  width: 34px;
+  height: 34px;
+  background: var(--sage-mid);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+  border: 1px solid #4a8f70;
+}
+
+.logo span {
+  font-family: 'Sora', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.navItem {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+  color: var(--sage-light);
+  text-decoration: none;
+}
+
+.navItem svg {
+  width: 16px;
+  height: 16px;
+}
+
+.navItem:hover {
+  background: var(--sage-mid);
+}
+
+.navItem.active {
+  background: #fff;
+  color: var(--sage-dark);
+}
+
+/* ── AVATAR / SIGN OUT ────────────────────────────────── */
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--sage-mid);
+  border: 1.5px solid #4a8f70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #d0ead8;
+  font-family: 'Sora', sans-serif;
+  cursor: pointer;
+  margin-top: auto;
+  transition: background 0.12s;
+}
+
+.avatar:hover {
+  background: #4a8f70;
+}
+
+/* ── MAIN ─────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--white);
+}

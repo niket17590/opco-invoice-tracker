@@ -1,0 +1,107 @@
+/* ── BUTTON ────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+  border: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Variants */
+.primary {
+  background: var(--sage-dark);
+  color: #fff;
+}
+.primary:hover:not(:disabled) { background: var(--sage-mid); }
+
+.ghost {
+  background: var(--white);
+  color: var(--sage-dark);
+  border: 1.5px solid #b0d0bc;
+}
+.ghost:hover:not(:disabled) { background: var(--sage-pale); }
+
+.danger {
+  background: var(--red-pale);
+  color: var(--red-text);
+  border: 1px solid #f5c0bc;
+}
+.danger:hover:not(:disabled) { background: #fad4d0; }
+
+/* Sizes */
+.size_sm { font-size: 11px; padding: 5px 12px; }
+.size_md { font-size: 12px; padding: 8px 18px; }
+.size_lg { font-size: 13px; padding: 10px 22px; }
+
+/* ── CARD ──────────────────────────────────────────────── */
+.card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+
+/* ── STATUS BADGE ──────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 99px;
+  text-transform: capitalize;
+  letter-spacing: 0.02em;
+}
+.badge::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.badge_paid   { background: var(--green-pale); color: var(--green-text); border: 1px solid var(--green-border); }
+.badge_sent   { background: var(--amber-pale); color: var(--amber);      border: 1px solid var(--amber-border); }
+.badge_draft  { background: var(--linen-mid);  color: var(--text-muted); border: 1px solid var(--linen-dark);  }
+
+/* ── SPINNER ───────────────────────────────────────────── */
+.spinnerWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--linen-dark);
+  border-top-color: var(--sage-dark);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── SECTION HEADER ─────────────────────────────────────── */
+.sectionHeader {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
