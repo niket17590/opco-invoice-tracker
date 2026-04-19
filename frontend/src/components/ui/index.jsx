@@ -1,6 +1,6 @@
 import styles from './ui.module.css'
 
-/* ── BUTTON ────────────────────────────────────────────── */
+/* ── BUTTON ─────────────────────────────────────────────────── */
 export function Button({ variant = 'primary', size = 'md', onClick, disabled, children, type = 'button' }) {
   return (
     <button
@@ -14,26 +14,49 @@ export function Button({ variant = 'primary', size = 'md', onClick, disabled, ch
   )
 }
 
-/* ── CARD ──────────────────────────────────────────────── */
+/* ── CARD ────────────────────────────────────────────────────── */
 export function Card({ children, className = '' }) {
-  return <div className={`${styles.card} ${className}`}>{children}</div>
+  return <div className={`card ${className}`}>{children}</div>
 }
 
-/* ── STATUS BADGE ──────────────────────────────────────── */
+/* ── STATUS BADGE ────────────────────────────────────────────── */
 export function StatusBadge({ status }) {
-  return <span className={`${styles.badge} ${styles[`badge_${status}`]}`}>{status}</span>
+  return <span className={`pill pill-${status}`}>{status}</span>
 }
 
-/* ── SPINNER ───────────────────────────────────────────── */
+/* ── SPINNER ─────────────────────────────────────────────────── */
 export function Spinner() {
   return (
-    <div className={styles.spinnerWrap}>
-      <div className={styles.spinner} />
+    <div className="spinner-wrap">
+      <div className="spinner" />
     </div>
   )
 }
 
-/* ── SECTION HEADER ────────────────────────────────────── */
+/* ── FIELD — shared label+input pair used on every form page ─── */
+export function Field({ label, children, span2 = false }) {
+  return (
+    <div className="field" style={span2 ? { gridColumn: 'span 2' } : undefined}>
+      <label className="field-label">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+/* ── SETTINGS SECTION CARD ───────────────────────────────────── */
+export function SettingsCard({ title, badge, children }) {
+  return (
+    <div className="settings-card">
+      <div className="settings-card-title">
+        <span>{title}</span>
+        {badge && <span className="settings-badge">{badge}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/* ── SECTION HEADER ─────────────────────────────────────────── */
 export function SectionHeader({ children }) {
-  return <div className={styles.sectionHeader}>{children}</div>
+  return <div className="section-label">{children}</div>
 }
