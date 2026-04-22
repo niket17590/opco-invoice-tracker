@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Button, Field, Spinner } from '../components/ui'
 import PageShell from '../components/layout/PageShell'
+import { InvoicePreviewModal } from './InvoicePDF'
 
 const toISO  = d => d.toISOString().split('T')[0]
 const fmtM   = n => `$${parseFloat(n||0).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`
@@ -29,15 +30,16 @@ export default function NewInvoice() {
   const navigate   = useNavigate()
   const { id }     = useParams()
 
-  const [loading, setLoading]   = useState(true)
-  const [saving, setSaving]     = useState(false)
-  const [clients, setClients]   = useState([])
-  const [settings, setSettings] = useState({})
-  const [error, setError]       = useState(null)
-  const [clientId, setClientId] = useState('')
-  const [invDate, setInvDate]   = useState(toISO(new Date()))
-  const [invNum, setInvNum]     = useState('')
-  const [lines, setLines]       = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [saving, setSaving]           = useState(false)
+  const [clients, setClients]         = useState([])
+  const [settings, setSettings]       = useState({})
+  const [error, setError]             = useState(null)
+  const [clientId, setClientId]       = useState('')
+  const [invDate, setInvDate]         = useState(toISO(new Date()))
+  const [invNum, setInvNum]           = useState('')
+  const [lines, setLines]             = useState([])
+  const [showPreview, setShowPreview] = useState(false)
 
   const client   = clients.find(c => c.id === clientId)
   const rate     = client?.hourly_rate || 0
@@ -146,12 +148,29 @@ export default function NewInvoice() {
 
   if (loading) return <PageShell crumb="Rapidmatix" title="New Invoice"><Spinner /></PageShell>
 
+  // Assembled invoice object for PDF template
+  const invoiceData = {
+    invoice_number: invNum,
+    invoice_date: invDate,
+    due_date: toISO(new Date(new Date(invDate).getTime() + pmtDays * 86400000)),
+    hst_rate: hstRate,
+  }
+
   return (
     <PageShell
       crumb="Rapidmatix" title={id ? invNum : 'New Invoice'}
       actions={
         <div className="flex gap-8">
-          <Button variant="ghost" onClick={() => save('draft')} disabled={saving}>Save Draft</Button>
+          <Button
+            variant="ghost"
+            onClick={() => setShowPreview(true)}
+            disabled={!clientId || !lines.length}
+          >
+            Preview PDF
+          </Button>
+          <Button variant="ghost" onClick={() => save('draft')} disabled={saving}>
+            Save Draft
+          </Button>
           <Button variant="primary" onClick={() => save('sent')} disabled={saving}>
             {saving ? 'Saving…' : 'Save & Mark Sent'}
           </Button>
@@ -220,7 +239,8 @@ export default function NewInvoice() {
                   onChange={e => updLine(i,'hourly_rate',e.target.value)} /></td>
                 <td className="tc-amt">{fmtM(+l.hours * +l.hourly_rate)}</td>
                 <td className="tc-center">
-                  <button className="btn-icon danger" onClick={() => setLines(ls => ls.filter((_,j) => j!==i))}
+                  <button className="btn-icon danger"
+                    onClick={() => setLines(ls => ls.filter((_,j) => j!==i))}
                     title="Remove">×</button>
                 </td>
               </tr>
@@ -263,6 +283,17 @@ export default function NewInvoice() {
           </div>
         </div>
       </div>
+
+      {/* PDF Preview Modal */}
+      {showPreview && (
+        <InvoicePreviewModal
+          invoice={invoiceData}
+          settings={settings}
+          client={client}
+          lines={lines}
+          onClose={() => setShowPreview(false)}
+        />
+      )}
     </PageShell>
   )
 }
