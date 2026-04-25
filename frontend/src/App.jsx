@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext'
 import Layout from './components/layout/Layout'
 import Login from './pages/Login'
 import AuthCallback from './pages/AuthCallback'
+import DriveCallback from './pages/DriveCallback'
 import Dashboard from './pages/Dashboard'
 import Invoices from './pages/Invoices'
 import NewInvoice from './pages/NewInvoice'
@@ -12,19 +13,14 @@ import ShareView from './pages/ShareView'
 
 function ProtectedRoute({ children }) {
   const { user, loading, isOwner } = useAuth()
-
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', color:'#a89e90', fontFamily:'Inter,sans-serif' }}>Loading…</div>
-
   if (!user) return <Navigate to="/login" replace />
-
-  // Only the owner email can access the app
   if (!isOwner) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', flexDirection:'column', gap:12, fontFamily:'Inter,sans-serif' }}>
       <p style={{ color:'#c0392b', fontWeight:500 }}>Access denied.</p>
       <p style={{ color:'#a89e90', fontSize:13 }}>This account is not authorised to access this application.</p>
     </div>
   )
-
   return children
 }
 
@@ -32,9 +28,10 @@ export default function App() {
   return (
     <Routes>
       {/* Public routes */}
-      <Route path="/login"         element={<Login />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
-      <Route path="/share/:token"  element={<ShareView />} />
+      <Route path="/login"               element={<Login />} />
+      <Route path="/auth/callback"       element={<AuthCallback />} />
+      <Route path="/auth/drive/callback" element={<DriveCallback />} />
+      <Route path="/share/:token"        element={<ShareView />} />
 
       {/* Protected routes */}
       <Route path="/" element={
@@ -51,7 +48,6 @@ export default function App() {
         <Route path="settings"        element={<Settings />} />
       </Route>
 
-      {/* Fallback */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   )
