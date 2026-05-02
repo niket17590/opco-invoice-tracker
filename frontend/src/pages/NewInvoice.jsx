@@ -41,25 +41,29 @@ export default function NewInvoice() {
   const { id }     = useParams()
   const isNew      = !id
 
-  const [loading, setLoading]           = useState(true)
-  const [saving, setSaving]             = useState(false)
-  const [editMode, setEditMode]         = useState(isNew) // new = edit, existing = view
-  const [clients, setClients]           = useState([])
-  const [settings, setSettings]         = useState({})
-  const [error, setError]               = useState(null)
-  const [clientId, setClientId]         = useState('')
-  const [invDate, setInvDate]           = useState(toISO(new Date()))
-  const [invNum, setInvNum]             = useState('')
-  const [lines, setLines]               = useState([])
-  const [invStatus, setInvStatus]       = useState('draft')
-  const [driveFileId, setDriveFileId]   = useState(null)
-  const [driveFileUrl, setDriveFileUrl] = useState(null)
+  const [loading, setLoading]             = useState(true)
+  const [saving, setSaving]               = useState(false)
+  const [editMode, setEditMode]           = useState(isNew)
+  const [clients, setClients]             = useState([])
+  const [settings, setSettings]           = useState({})
+  const [error, setError]                 = useState(null)
+  const [clientId, setClientId]           = useState('')
+  const [invDate, setInvDate]             = useState(toISO(new Date()))
+  const [invNum, setInvNum]               = useState('')
+  const [lines, setLines]                 = useState([])
+  const [invStatus, setInvStatus]         = useState('draft')
+  const [paymentDate, setPaymentDate]     = useState('') // due_date reused as payment_received_date
+  const [savingPayDate, setSavingPayDate] = useState(false)
+  const [driveFileId, setDriveFileId]     = useState(null)
+  const [driveFileUrl, setDriveFileUrl]   = useState(null)
   const [driveUploadedAt, setDriveUploadedAt] = useState(null)
-  const [showPreview, setShowPreview]   = useState(false)
+  const [showPreview, setShowPreview]     = useState(false)
   const [savingToDrive, setSavingToDrive] = useState(false)
-  const [driveSuccess, setDriveSuccess] = useState(null)
-  const [driveError, setDriveError]     = useState(null)
-  const [showReupload, setShowReupload] = useState(false) // prompt after edit
+  const [driveSuccess, setDriveSuccess]   = useState(null)
+  const [driveError, setDriveError]       = useState(null)
+  const [showReupload, setShowReupload]   = useState(false)
+  const [deleteModal, setDeleteModal]     = useState(false)
+  const [deleting, setDeleting]           = useState(false)
   const hiddenTemplateRef = useRef(null)
 
   const client   = clients.find(c => c.id === clientId)
@@ -89,6 +93,8 @@ export default function NewInvoice() {
         setDriveFileId(inv.drive_file_id||null)
         setDriveFileUrl(inv.drive_file_url||null)
         setDriveUploadedAt(inv.drive_uploaded_at||null)
+        // due_date = payment_received_date when paid
+        setPaymentDate(inv.due_date || '')
       }
     } else {
       if (cl?.length) { setClientId(cl[0].id); await prefill(cl[0], user.id) }
@@ -132,12 +138,17 @@ export default function NewInvoice() {
     if (!clientId) { setError('Please select a client.'); return }
     if (!lines.length) { setError('Add at least one billing line.'); return }
     setSaving(true); setError(null)
-    const due=new Date(invDate); due.setDate(due.getDate()+pmtDays)
+
+    // due_date = payment date if paid, else calculate from terms
+    const dueDate = status === 'paid' && paymentDate
+      ? paymentDate
+      : toISO(new Date(new Date(invDate).getTime() + pmtDays * 86400000))
+
     const payload={
       user_id:user.id, client_id:clientId, invoice_number:invNum,
       invoice_year:new Date(invDate).getFullYear(),
       sequence_number:parseInt(invNum.replace(/\D/g,'').slice(4))||1,
-      invoice_date:invDate, due_date:toISO(due),
+      invoice_date:invDate, due_date:dueDate,
       subtotal, hst_rate:hstRate, hst_amount:hstAmt, total, total_hours:totHours,
       status, updated_at:new Date().toISOString(),
     }
@@ -156,14 +167,30 @@ export default function NewInvoice() {
     setSaving(false)
 
     if (id) {
-      // After editing existing invoice — go back to view mode
       setInvStatus(status)
       setEditMode(false)
-      // If was previously on Drive, prompt re-upload
       if (driveFileId) setShowReupload(true)
     } else {
       navigate('/invoices')
     }
+  }
+
+  // Save payment date change in-place (from view mode)
+  async function savePaymentDate(newDate) {
+    setSavingPayDate(true)
+    await supabase.from('invoices').update({
+      due_date: newDate,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    setPaymentDate(newDate)
+    setSavingPayDate(false)
+  }
+
+  async function handleDeleteInvoice() {
+    setDeleting(true)
+    await supabase.from('invoice_lines').delete().eq('invoice_id', id)
+    await supabase.from('invoices').delete().eq('id', id)
+    navigate('/invoices', { replace: true })
   }
 
   async function handleSaveToDrive(overrideFileId = null) {
@@ -180,7 +207,6 @@ export default function NewInvoice() {
       pdf.addImage(canvas.toDataURL('image/jpeg', 0.97), 'JPEG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight())
       const pdfBlob = pdf.output('arraybuffer')
 
-      // If overriding existing file, delete old one first
       if (overrideFileId) {
         try {
           const accessToken = await getAccessToken(settings.drive_refresh_token)
@@ -188,7 +214,7 @@ export default function NewInvoice() {
             method: 'DELETE',
             headers: { Authorization: `Bearer ${accessToken}` },
           })
-        } catch(e) { /* ignore delete errors */ }
+        } catch(e) { /* ignore */ }
       }
 
       const result = await driveUpload({
@@ -198,7 +224,6 @@ export default function NewInvoice() {
         pdfBlob,
       })
 
-      // Save drive metadata to invoice row
       const now = new Date().toISOString()
       if (id) {
         await supabase.from('invoices').update({
@@ -210,7 +235,6 @@ export default function NewInvoice() {
         setDriveFileUrl(result.webViewLink)
         setDriveUploadedAt(now)
       }
-
       setDriveSuccess(result.webViewLink)
     } catch(e) {
       if (e.message?.includes('invalid_grant')) {
@@ -228,7 +252,7 @@ export default function NewInvoice() {
 
   const invoiceData = {
     invoice_number:invNum, invoice_date:invDate,
-    due_date:toISO(new Date(new Date(invDate).getTime()+pmtDays*86400000)),
+    due_date: paymentDate || toISO(new Date(new Date(invDate).getTime()+pmtDays*86400000)),
     hst_rate:hstRate,
   }
   const driveReady = settings.drive_connected && settings.drive_folder_id && clientId && lines.length > 0
@@ -241,41 +265,55 @@ export default function NewInvoice() {
       <PageShell
         crumb="Rapidmatix" title={invNum}
         actions={
-          <div className="flex gap-8" style={{alignItems:'center'}}>
+          <div className="ni-toolbar-actions">
             {/* Save to Drive */}
             <button
               onClick={() => handleSaveToDrive(driveFileId||null)}
               disabled={savingToDrive || !driveReady}
               title={!settings.drive_connected?'Connect Drive in Settings':!settings.drive_folder_id?'Set folder in Settings':''}
-              style={{display:'inline-flex',alignItems:'center',gap:7,padding:'7px 14px',borderRadius:8,border:'1.5px solid var(--border)',background:'var(--white)',cursor:(!driveReady||savingToDrive)?'default':'pointer',fontSize:12,fontWeight:600,fontFamily:'Inter,sans-serif',color:driveReady?'var(--text-primary)':'var(--text-muted)',opacity:driveReady?1:.55,transition:'all .12s'}}
+              style={{display:'inline-flex',alignItems:'center',gap:7,padding:'7px 14px',borderRadius:8,border:'1.5px solid var(--border)',background:'var(--white)',cursor:(!driveReady||savingToDrive)?'default':'pointer',fontSize:12,fontWeight:600,fontFamily:'Inter,sans-serif',color:driveReady?'var(--text-primary)':'var(--text-muted)',opacity:driveReady?1:.55,transition:'all .12s',whiteSpace:'nowrap'}}
               onMouseEnter={e=>{ if(driveReady&&!savingToDrive){e.currentTarget.style.borderColor='var(--sage-dark)';e.currentTarget.style.background='var(--sage-pale)'}}}
               onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--white)'}}
             >
               {savingToDrive?(
                 <><div style={{width:13,height:13,border:'2px solid var(--linen-dark)',borderTopColor:'var(--sage-dark)',borderRadius:'50%',animation:'spin .7s linear infinite'}}/> Uploading…</>
               ):(
-                <><svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H60l5.65 10.8z" fill="#ea4335"/><path d="M43.65 25L57.4 0H29.9L43.65 25z" fill="#00832d"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/><path d="M59.8 27.35L46.05 3.3c-1.35-.8-2.9-1.2-4.5-1.2-1.6 0-3.15.45-4.5 1.2L57.4 0h.05L73.1 27.35 87.3 53c0-1.55-.4-3.1-1.2-4.5L61.35 3.3 59.8 27.35z" fill="#ffba00"/></svg>
-                {driveFileId ? 'Re-upload to Drive' : 'Save to Drive'}</>
+                <><svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/></svg>
+                {driveFileId ? 'Re-upload' : 'Save to Drive'}</>
               )}
             </button>
             <Button variant="ghost" onClick={() => setShowPreview(true)}>Preview PDF</Button>
             <Button variant="primary" onClick={() => { setEditMode(true); setShowReupload(false) }}>Edit Invoice</Button>
+            <Button variant="danger" onClick={() => setDeleteModal(true)}>Delete</Button>
           </div>
         }
       >
-        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        <style>{`
+          @keyframes spin{to{transform:rotate(360deg)}}
+          .ni-toolbar-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+          .ni-meta-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+          .ni-meta-item { padding:10px 0; border-bottom:1px solid var(--border-light); }
+          .ni-meta-label { font-size:10px; font-weight:700; color:var(--text-muted); letter-spacing:.1em; text-transform:uppercase; margin-bottom:4px; }
+          .ni-meta-val { font-size:13px; color:var(--text-primary); font-weight:500; }
+          .ni-lines-wrap { overflow-x:auto; }
+          @media(max-width:640px){
+            .ni-meta-grid { grid-template-columns:1fr; }
+            .ni-toolbar-actions { gap:6px; }
+            .ni-toolbar-actions button, .ni-toolbar-actions a { font-size:11px; padding:6px 10px; }
+          }
+        `}</style>
 
         {driveError   && <div className="alert-error">{driveError}</div>}
         {driveSuccess  && (
           <div className="alert-success" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <span>✓ Saved to Google Drive</span>
-            <a href={driveSuccess} target="_blank" rel="noopener noreferrer" style={{fontSize:12,fontWeight:600,color:'var(--green-text)'}}>Open in Drive →</a>
+            <a href={driveSuccess} target="_blank" rel="noopener noreferrer" style={{fontSize:12,fontWeight:600,color:'var(--green-text)'}}>Open →</a>
           </div>
         )}
 
         {/* Invoice summary card */}
         <div className="card">
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16,flexWrap:'wrap',gap:8}}>
             <div>
               <div style={{fontFamily:"'Sora',sans-serif",fontSize:20,fontWeight:700,color:'var(--text-primary)',marginBottom:4}}>{invNum}</div>
               <div style={{fontSize:13,color:'var(--text-muted)'}}>{client?.name || '—'}{client?.consulting_client ? ` · ${client.consulting_client}` : ''}</div>
@@ -286,23 +324,48 @@ export default function NewInvoice() {
             </span>
           </div>
 
-          <div className="grid-2" style={{gap:'0 24px'}}>
+          <div className="ni-meta-grid">
             {[
               ['Invoice Date', fmtD(invDate)],
               ['Invoice Number', invNum],
               ['Rate', rate ? `${fmtM(rate)} / hr` : '—'],
               ['Payment Terms', `Net ${pmtDays} days`],
             ].map(([l,v]) => (
-              <div key={l} style={{padding:'10px 0',borderBottom:'1px solid var(--border-light)'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:4}}>{l}</div>
-                <div style={{fontSize:13,color:'var(--text-primary)',fontWeight:500}}>{v}</div>
+              <div key={l} className="ni-meta-item">
+                <div className="ni-meta-label">{l}</div>
+                <div className="ni-meta-val">{v}</div>
               </div>
             ))}
           </div>
 
+          {/* Payment Received Date — editable in view mode when paid */}
+          {invStatus === 'paid' && (
+            <div style={{marginTop:16,padding:'12px 16px',background:'var(--green-pale)',border:'1px solid var(--green-border)',borderRadius:'var(--radius-md)'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'var(--green-text)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:8}}>
+                Payment Received Date
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <input
+                  type="date"
+                  className="fi"
+                  value={paymentDate}
+                  max={toISO(new Date())}
+                  onChange={e => setPaymentDate(e.target.value)}
+                  style={{maxWidth:180,flex:'0 0 auto'}}
+                />
+                <Button variant="ghost" size="sm"
+                  disabled={savingPayDate || !paymentDate}
+                  onClick={() => savePaymentDate(paymentDate)}>
+                  {savingPayDate ? 'Saving…' : 'Update'}
+                </Button>
+                <span style={{fontSize:11,color:'var(--green-text)'}}>Date money arrived in your bank account</span>
+              </div>
+            </div>
+          )}
+
           {/* Drive status */}
           {driveFileId && (
-            <div style={{marginTop:16,padding:'10px 14px',background:'#f0faf4',border:'1px solid #c8e6d4',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{marginTop:16,padding:'10px 14px',background:'#f0faf4',border:'1px solid #c8e6d4',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/></svg>
                 <div>
@@ -316,7 +379,7 @@ export default function NewInvoice() {
         </div>
 
         {/* Billing lines (read-only) */}
-        <div className="tbl-wrap">
+        <div className="tbl-wrap ni-lines-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -341,7 +404,7 @@ export default function NewInvoice() {
 
         {/* Totals (read-only) */}
         <div className="card">
-          <div className="totals-panel">
+          <div className="totals-panel" style={{flexWrap:'wrap',gap:16}}>
             <div className="totals-meta">
               <div><div className="totals-stat-num">{fmt2(totHours)}</div><div className="totals-stat-label">billable hours</div></div>
               <div className="totals-meta-divider"/>
@@ -366,6 +429,30 @@ export default function NewInvoice() {
         )}
 
         {showPreview && <InvoicePreviewModal invoice={invoiceData} settings={settings} client={client} lines={lines} onClose={()=>setShowPreview(false)}/>}
+
+        {/* Delete modal */}
+        {deleteModal && (
+          <div className="modal-overlay" onClick={() => setDeleteModal(false)}>
+            <div className="modal" style={{maxWidth:400}} onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <span className="modal-title" style={{color:'var(--red-text)'}}>Delete Invoice</span>
+                <button className="modal-close" onClick={() => setDeleteModal(false)}>✕</button>
+              </div>
+              <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:12}}>
+                Are you sure you want to delete <strong>{invNum}</strong>?
+              </p>
+              <div style={{padding:'10px 14px',background:'var(--red-pale)',border:'1px solid var(--red-border)',borderRadius:'var(--radius-md)',fontSize:12,color:'var(--red-text)'}}>
+                This permanently deletes the invoice and all billing lines. This cannot be undone.
+              </div>
+              <div className="modal-footer">
+                <Button variant="ghost" onClick={() => setDeleteModal(false)}>Cancel</Button>
+                <Button variant="danger" onClick={handleDeleteInvoice} disabled={deleting}>
+                  {deleting ? 'Deleting…' : 'Yes, Delete Invoice'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </PageShell>
     )
   }
@@ -377,7 +464,7 @@ export default function NewInvoice() {
     <PageShell
       crumb="Rapidmatix" title={isNew ? 'New Invoice' : `Edit · ${invNum}`}
       actions={
-        <div className="flex gap-8">
+        <div className="ni-toolbar-actions">
           {!isNew && <Button variant="ghost" onClick={() => { setEditMode(false); setError(null) }}>Cancel</Button>}
           <Button variant="ghost" onClick={() => setShowPreview(true)} disabled={!clientId||!lines.length}>Preview PDF</Button>
           <Button variant="ghost" onClick={() => save('draft')} disabled={saving}>Save Draft</Button>
@@ -385,12 +472,20 @@ export default function NewInvoice() {
         </div>
       }
     >
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <style>{`
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .ni-toolbar-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .ni-lines-wrap { overflow-x:auto; }
+        @media(max-width:640px){
+          .ni-toolbar-actions { gap:6px; }
+          .ni-toolbar-actions button { font-size:11px; padding:6px 10px; }
+        }
+      `}</style>
+
       {error && <div className="alert-error">{error}</div>}
 
-      {/* Re-upload prompt (shown after editing an invoice that was on Drive) */}
       {showReupload && (
-        <div style={{padding:'12px 16px',background:'#fef3e2',border:'1px solid #f0d8a0',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+        <div style={{padding:'12px 16px',background:'#fef3e2',border:'1px solid #f0d8a0',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
           <div>
             <div style={{fontSize:13,fontWeight:600,color:'#9a6010'}}>Invoice updated</div>
             <div style={{fontSize:11,color:'#7a6040',marginTop:2}}>This invoice was previously saved to Drive. Re-upload to replace the old PDF.</div>
@@ -425,7 +520,7 @@ export default function NewInvoice() {
         </div>
       </div>
 
-      <div className="tbl-wrap">
+      <div className="tbl-wrap ni-lines-wrap">
         <table className="tbl">
           <colgroup>
             <col style={{width:'22%'}}/><col style={{width:'22%'}}/>
@@ -447,7 +542,7 @@ export default function NewInvoice() {
                 <td><input type="number" className="fi" value={l.hours} min="0" step="1" onChange={e=>updLine(i,'hours',e.target.value)}/></td>
                 <td><input type="number" className="fi" value={l.hourly_rate} min="0" step="0.01" onChange={e=>updLine(i,'hourly_rate',e.target.value)}/></td>
                 <td className="tc-amt">{fmtM(+l.hours * +l.hourly_rate)}</td>
-                <td className="tc-center"><button className="btn-icon danger" onClick={()=>setLines(ls=>ls.filter((_,j)=>j!==i))} title="Remove">×</button></td>
+                <td className="tc-center"><button style={{background:'none',border:'none',color:'var(--red-text)',fontSize:16,cursor:'pointer',lineHeight:1,padding:'0 4px'}} onClick={()=>setLines(ls=>ls.filter((_,j)=>j!==i))} title="Remove">×</button></td>
               </tr>
             ))}
           </tbody>
@@ -456,7 +551,7 @@ export default function NewInvoice() {
       </div>
 
       <div className="card">
-        <div className="totals-panel">
+        <div className="totals-panel" style={{flexWrap:'wrap',gap:16}}>
           <div className="totals-meta">
             <div><div className="totals-stat-num">{fmt2(totHours)}</div><div className="totals-stat-label">billable hours</div></div>
             <div className="totals-meta-divider"/>
@@ -471,7 +566,6 @@ export default function NewInvoice() {
         </div>
       </div>
 
-      {/* Hidden template for Drive upload in edit mode */}
       {clientId && lines.length > 0 && (
         <div style={{position:'fixed',left:'-9999px',top:0,pointerEvents:'none',opacity:0}}>
           <div ref={hiddenTemplateRef}>
