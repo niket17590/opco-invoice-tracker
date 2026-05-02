@@ -5,30 +5,30 @@ import { supabase } from '../lib/supabase'
 import { Button, StatusBadge, Spinner } from '../components/ui'
 import PageShell from '../components/layout/PageShell'
 
-const MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-const fmt     = n => `$${parseFloat(n||0).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`
-const fmtK    = n => { const v = parseFloat(n||0); return v >= 1000 ? `$${(v/1000).toFixed(1)}k` : fmt(v) }
-const fmtDFull= d => d ? new Date(d+'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'}) : '—'
-const curYear = new Date().getFullYear()
-const curMon  = new Date().getMonth()
+const MONTHS   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const fmt      = n => `$${parseFloat(n||0).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+const fmtK     = n => { const v=parseFloat(n||0); return v>=1000?`$${(v/1000).toFixed(1)}k`:fmt(v) }
+const fmtDFull = d => d ? new Date(d+'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'}) : '—'
+const curYear  = new Date().getFullYear()
+const curMon   = new Date().getMonth()
 
-// For paid invoices: use due_date as payment_received_date
-// For other invoices: use invoice_date
-function getEffectiveDate(inv) {
-  if (inv.status === 'paid' && inv.due_date) return inv.due_date
-  return inv.invoice_date
-}
-function getEffectiveYear(inv) {
-  return new Date(getEffectiveDate(inv) + 'T12:00:00').getFullYear()
-}
-function getEffectiveMonth(inv) {
-  return new Date(getEffectiveDate(inv) + 'T12:00:00').getMonth()
+/**
+ * due_date lifecycle:
+ *   draft → null
+ *   sent  → payment due date (invoice_date + terms)
+ *   paid  → actual payment received date (overwritten by Mark Paid modal)
+ *
+ * For grouping purposes:
+ *   paid invoices  → group by due_date (= payment received date)
+ *   sent/draft     → group by invoice_date
+ */
+function effectiveDate(inv) {
+  return (inv.status === 'paid' && inv.due_date) ? inv.due_date : inv.invoice_date
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
-  const navigate = useNavigate()
-
+  const { user }   = useAuth()
+  const navigate   = useNavigate()
   const [loading, setLoading]         = useState(true)
   const [allInvoices, setAllInvoices] = useState([])
   const [clients, setClients]         = useState([])
@@ -40,10 +40,7 @@ export default function Dashboard() {
 
   async function load() {
     const [{ data: inv }, { data: cl }, { data: st }] = await Promise.all([
-      supabase.from('invoices')
-        .select('*, clients(name)')
-        .eq('user_id', user.id)
-        .order('invoice_date', { ascending: false }),
+      supabase.from('invoices').select('*, clients(name)').eq('user_id', user.id).order('invoice_date', { ascending: false }),
       supabase.from('clients').select('id, name, hourly_rate').eq('user_id', user.id),
       supabase.from('settings').select('hst_rate').eq('user_id', user.id).single(),
     ])
@@ -55,48 +52,51 @@ export default function Dashboard() {
 
   if (loading) return <PageShell crumb="Rapidmatix" title="Dashboard"><Spinner /></PageShell>
 
-  // ── All-time stats ───────────────────────────────────────
-  // Revenue = subtotal (before HST) across all invoices
+  // ── All-time lifetime stats ──────────────────────────────
   const lifetimeRev   = allInvoices.reduce((s,i) => s + +i.subtotal, 0)
-  // HST collected = only from non-draft invoices
   const lifetimeHST   = allInvoices.filter(i=>i.status!=='draft').reduce((s,i)=>s+(+i.hst_amount),0)
   const lifetimeCount = allInvoices.length
   const paidInvoices  = allInvoices.filter(i=>i.status==='paid')
-  // FIXED: "Collected" = sum of total (subtotal + HST) for paid invoices
+  // FIXED: Collected = sum of total (subtotal + HST) for paid invoices
   const lifetimePaid  = paidInvoices.reduce((s,i)=>s+(+i.total),0)
   const avgInvoice    = lifetimeCount ? lifetimeRev / lifetimeCount : 0
 
   // ── Selected-year stats ──────────────────────────────────
-  // For paid invoices: year is determined by payment_received_date (due_date)
-  // For others: by invoice_date
-  const yearInvoices   = allInvoices.filter(i => getEffectiveYear(i) === selYear)
+  // Paid invoices: year derived from payment received date (due_date)
+  // Others: year derived from invoice_date
+  const yearInvoices   = allInvoices.filter(i => {
+    const d = new Date(effectiveDate(i) + 'T12:00:00')
+    return d.getFullYear() === selYear
+  })
   const ytdRev         = yearInvoices.reduce((s,i)=>s+(+i.subtotal),0)
   const ytdHST         = yearInvoices.filter(i=>i.status!=='draft').reduce((s,i)=>s+(+i.hst_amount),0)
-  // FIXED: Collected = total (with HST) for paid invoices in this year
+  // FIXED: Collected = total (with HST), not subtotal
   const ytdCollected   = yearInvoices.filter(i=>i.status==='paid').reduce((s,i)=>s+(+i.total),0)
   const ytdOutstanding = yearInvoices.filter(i=>i.status==='sent').reduce((s,i)=>s+(+i.total),0)
   const ytdPaidCount   = yearInvoices.filter(i=>i.status==='paid').length
 
   // ── Stacked monthly bars ─────────────────────────────────
-  // paidByMonth: indexed by effective month of paid invoices (payment_received_date)
-  // outstandingByMonth: indexed by invoice_date month for sent invoices
-  const paidByMonth        = Array(12).fill(0)
-  const outstandingByMonth = Array(12).fill(0)
+  // paidByMonth: use payment received date (due_date) for paid invoices
+  // pendingByMonth: use invoice_date for sent/draft invoices
+  const paidByMonth    = Array(12).fill(0)
+  const pendingByMonth = Array(12).fill(0)
 
   yearInvoices.forEach(inv => {
     if (inv.status === 'paid') {
-      paidByMonth[getEffectiveMonth(inv)] += +inv.subtotal
-    } else if (inv.status === 'sent') {
-      outstandingByMonth[new Date(inv.invoice_date+'T12:00:00').getMonth()] += +inv.subtotal
-    } else if (inv.status === 'draft') {
-      outstandingByMonth[new Date(inv.invoice_date+'T12:00:00').getMonth()] += +inv.subtotal
+      const m = new Date((inv.due_date || inv.invoice_date) + 'T12:00:00').getMonth()
+      paidByMonth[m] += +inv.subtotal
+    } else {
+      const m = new Date(inv.invoice_date + 'T12:00:00').getMonth()
+      pendingByMonth[m] += +inv.subtotal
     }
   })
 
-  const maxBar = Math.max(...paidByMonth.map((p,i) => p + outstandingByMonth[i]), 1)
+  const maxBar = Math.max(...paidByMonth.map((p,i) => p + pendingByMonth[i]), 1)
 
-  // ── Year list from data (using effective date) ───────────
-  const years = [...new Set(allInvoices.map(i => getEffectiveYear(i)))].sort((a,b)=>b-a)
+  // ── Available years (from effective date) ────────────────
+  const years = [...new Set(allInvoices.map(i => {
+    return new Date(effectiveDate(i) + 'T12:00:00').getFullYear()
+  }))].sort((a,b)=>b-a)
 
   // ── Year-over-year (same-period fair comparison) ─────────
   const now     = new Date()
@@ -104,17 +104,15 @@ export default function Dashboard() {
 
   const yoyData = [...years].reverse().slice(-4).map(y => {
     const inv = allInvoices.filter(i => {
-      const effYear = getEffectiveYear(i)
-      if (effYear !== y) return false
-      const d  = new Date(getEffectiveDate(i) + 'T12:00:00')
+      const d  = new Date(effectiveDate(i) + 'T12:00:00')
       const md = d.getMonth() * 100 + d.getDate()
-      return md <= todayMD
+      return d.getFullYear() === y && md <= todayMD
     })
     return {
-      year: y,
-      rev:   inv.reduce((s,i) => s + +i.subtotal, 0),
-      paid:  inv.filter(i=>i.status==='paid').reduce((s,i)=>s+(+i.subtotal),0),
-      count: inv.length,
+      year:      y,
+      rev:       inv.reduce((s,i) => s + +i.subtotal, 0),
+      paid:      inv.filter(i=>i.status==='paid').reduce((s,i)=>s+(+i.subtotal),0),
+      count:     inv.length,
       isCurrent: y === curYear,
     }
   })
@@ -124,11 +122,12 @@ export default function Dashboard() {
   const clientBreakdown = clients.map(cl => {
     const inv = allInvoices.filter(i => i.client_id === cl.id)
     return {
-      name: cl.name, rate: cl.hourly_rate,
-      rev:  inv.reduce((s,i)=>s+(+i.subtotal),0),
+      name:  cl.name,
+      rate:  cl.hourly_rate,
+      rev:   inv.reduce((s,i)=>s+(+i.subtotal),0),
       count: inv.length,
-      // FIXED: paid = sum of total (with HST) for paid invoices
-      paid: inv.filter(i=>i.status==='paid').reduce((s,i)=>s+(+i.total),0),
+      // FIXED: paid = sum of total (with HST)
+      paid:  inv.filter(i=>i.status==='paid').reduce((s,i)=>s+(+i.total),0),
     }
   }).sort((a,b)=>b.rev-a.rev)
   const totalClientRev = clientBreakdown.reduce((s,c)=>s+c.rev,0) || 1
@@ -166,10 +165,10 @@ export default function Dashboard() {
 
       {/* ── Lifetime KPIs ── */}
       <div className="db-kpi-grid">
-        <div className="db-kpi-card db-kpi-hero">
+        <div className="db-kpi-card db-hero">
           <div className="db-kpi-label" style={{color:'#9fc8b0'}}>Lifetime Revenue</div>
-          <div className="db-kpi-val" style={{color:'#fff'}}>{fmt(lifetimeRev)}</div>
-          <div className="db-kpi-sub" style={{color:'#9fc8b0'}}>{lifetimeCount} invoices total</div>
+          <div className="db-kpi-val"   style={{color:'#fff'}}>{fmt(lifetimeRev)}</div>
+          <div className="db-kpi-sub"   style={{color:'#9fc8b0'}}>{lifetimeCount} invoices total</div>
         </div>
         <div className="db-kpi-card">
           <div className="db-kpi-label">HST Collected</div>
@@ -177,9 +176,9 @@ export default function Dashboard() {
           <div className="db-kpi-sub">all time · to remit to CRA</div>
         </div>
         <div className="db-kpi-card">
-          <div className="db-kpi-label">Total Paid (incl. HST)</div>
+          <div className="db-kpi-label">Total Received</div>
           <div className="db-kpi-val" style={{color:'#2d5a45'}}>{fmt(lifetimePaid)}</div>
-          <div className="db-kpi-sub">{paidInvoices.length} paid invoices</div>
+          <div className="db-kpi-sub">{paidInvoices.length} paid invoices · incl. HST</div>
         </div>
         <div className="db-kpi-card">
           <div className="db-kpi-label">Avg Invoice Value</div>
@@ -199,15 +198,12 @@ export default function Dashboard() {
               <div style={{fontSize:11,color:'#9a9080',marginTop:2}}>
                 {selYear===curYear ? `YTD: ${fmt(ytdRev)}` : `Full year: ${fmt(ytdRev)}`}
               </div>
-              {/* Legend */}
-              <div style={{display:'flex',gap:12,marginTop:6}}>
+              <div style={{display:'flex',gap:14,marginTop:7}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,fontSize:10,color:'#7a8070'}}>
-                  <div style={{width:10,height:10,borderRadius:2,background:'#2d5a45',flexShrink:0}}/>
-                  Paid (by receipt date)
+                  <div style={{width:10,height:10,borderRadius:2,background:'#2d5a45'}}/>Received (by bank date)
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:5,fontSize:10,color:'#7a8070'}}>
-                  <div style={{width:10,height:10,borderRadius:2,background:'#c8e0d0',flexShrink:0}}/>
-                  Sent / Draft
+                  <div style={{width:10,height:10,borderRadius:2,background:'#c8e0d0'}}/>Sent / Pending
                 </div>
               </div>
             </div>
@@ -220,45 +216,27 @@ export default function Dashboard() {
 
           <div className="db-bars-wrap" key={animKey}>
             {paidByMonth.map((paidVal, i) => {
-              const outVal  = outstandingByMonth[i]
-              const total   = paidVal + outVal
-              const isActive= selYear===curYear && i===curMon
-              const paidH   = Math.max(0, (paidVal/maxBar)*72)
-              const outH    = Math.max(0, (outVal/maxBar)*72)
-              const totalH  = Math.max(total > 0 ? 3 : 0, paidH + outH)
+              const pendVal = pendingByMonth[i]
+              const totalH  = Math.max((paidVal + pendVal) > 0 ? 3 : 0, ((paidVal + pendVal) / maxBar) * 72)
+              const paidFrac = (paidVal + pendVal) > 0 ? paidVal / (paidVal + pendVal) : 0
+              const paidH   = totalH * paidFrac
+              const pendH   = totalH - paidH
+              const isActive = selYear === curYear && i === curMon
 
               return (
                 <div key={i} className="db-bar-col">
                   <div className="db-bar-stack-wrap">
-                    {/* Stacked bar: outstanding on top, paid on bottom */}
-                    <div className="db-bar-stack" style={{height:`${totalH}px`, opacity: isActive ? 1 : 0.85}}>
-                      {outH > 0 && (
-                        <div
-                          className="db-bar-segment db-bar-anim"
-                          style={{
-                            height:`${outH}px`,
-                            background: '#c8e0d0',
-                            animationDelay:`${i*30}ms`,
-                          }}
-                        />
+                    <div style={{width:'100%',display:'flex',flexDirection:'column',justifyContent:'flex-end',height:`${totalH}px`,opacity: isActive ? 1 : 0.88}}>
+                      {pendH > 0 && (
+                        <div className="db-bar-anim" style={{width:'100%',height:`${pendH}px`,background:'#c8e0d0',animationDelay:`${i*28}ms`,...(i===0?{borderRadius:'3px 3px 0 0'}:{})}}/>
                       )}
                       {paidH > 0 && (
-                        <div
-                          className="db-bar-segment db-bar-anim"
-                          style={{
-                            height:`${paidH}px`,
-                            background: isActive ? '#1a3a2a' : '#2d5a45',
-                            animationDelay:`${i*30}ms`,
-                          }}
-                        />
-                      )}
-                      {total === 0 && (
-                        <div style={{height:3,background:'#e8e4dc',borderRadius:'2px 2px 0 0'}}/>
+                        <div className="db-bar-anim" style={{width:'100%',height:`${paidH}px`,background:isActive?'#1a3a2a':'#2d5a45',animationDelay:`${i*28}ms`,...(pendH===0?{borderRadius:'3px 3px 0 0'}:{})}}/>
                       )}
                     </div>
                   </div>
                   <div className="db-bar-lbl">{MONTHS[i]}</div>
-                  {total > 0 && <div className="db-bar-amt">{fmtK(total)}</div>}
+                  {(paidVal + pendVal) > 0 && <div className="db-bar-amt">{fmtK(paidVal + pendVal)}</div>}
                 </div>
               )
             })}
@@ -269,12 +247,12 @@ export default function Dashboard() {
         <div className="db-card">
           <div className="db-card-title">{selYear} Summary</div>
           {[
-            ['Invoices',              `${yearInvoices.length} total`,  ''],
-            ['Paid',                  `${ytdPaidCount} invoices`,      ''],
-            ['Net Revenue',           fmt(ytdRev),                     '#2d5a45'],
-            [`HST (${hstRate}%)`,     fmt(ytdHST),                     '#c07820'],
-            ['Outstanding (incl. HST)', fmt(ytdOutstanding),           ytdOutstanding>0?'#c07820':'#9a9080'],
-            ['Collected (incl. HST)', fmt(ytdCollected),               '#2d5a45'],
+            ['Invoices',                `${yearInvoices.length} total`,  ''],
+            ['Paid',                    `${ytdPaidCount} invoices`,      ''],
+            ['Net Revenue',             fmt(ytdRev),                     '#2d5a45'],
+            [`HST (${hstRate}%)`,       fmt(ytdHST),                     '#c07820'],
+            ['Outstanding (incl. HST)', fmt(ytdOutstanding),             ytdOutstanding>0?'#c07820':'#9a9080'],
+            ['Collected (incl. HST)',   fmt(ytdCollected),               '#2d5a45'],
           ].map(([l,v,c]) => (
             <div key={l} className="db-hst-row">
               <span className="db-hst-lbl">{l}</span>
@@ -282,14 +260,13 @@ export default function Dashboard() {
             </div>
           ))}
           <div style={{marginTop:10,padding:'8px 10px',background:'var(--linen-mid)',borderRadius:6,fontSize:10,color:'var(--text-muted)',lineHeight:1.5}}>
-            Collected = payments actually received (by bank date). Outstanding = invoices awaiting payment.
+            Collected groups paid invoices by bank receipt date. Outstanding groups sent invoices by invoice date.
           </div>
         </div>
       </div>
 
       {/* ── Client breakdown + YoY ── */}
       <div className="db-bottom-grid">
-
         <div className="db-card">
           <div className="db-card-title">Revenue by Client — All Time</div>
           {clientBreakdown.map((cl, i) => (
@@ -302,10 +279,10 @@ export default function Dashboard() {
                 <div style={{fontFamily:"'Sora',sans-serif",fontSize:14,fontWeight:800,color:'#2d5a45'}}>{fmt(cl.rev)}</div>
               </div>
               <div style={{height:5,background:'#f0ece4',borderRadius:3,overflow:'hidden',marginBottom:4}}>
-                <div style={{height:'100%',borderRadius:3,background: i===0?'#2d5a45':'#9fc8b0',width:`${(cl.rev/totalClientRev)*100}%`,transition:'width .6s cubic-bezier(.4,0,.2,1)'}} />
+                <div style={{height:'100%',borderRadius:3,background:i===0?'#2d5a45':'#9fc8b0',width:`${(cl.rev/totalClientRev)*100}%`,transition:'width .6s cubic-bezier(.4,0,.2,1)'}}/>
               </div>
               <div style={{fontSize:10,color:'#9a9080'}}>
-                {Math.round((cl.rev/totalClientRev)*100)}% of revenue · {fmt(cl.paid)} collected
+                {Math.round((cl.rev/totalClientRev)*100)}% of revenue · {fmt(cl.paid)} collected (incl. HST)
               </div>
             </div>
           ))}
@@ -314,22 +291,12 @@ export default function Dashboard() {
         <div className="db-card">
           <div className="db-card-title">Year-over-Year</div>
           {yoyData.map((d, i) => (
-            <div key={d.year} style={{display:'flex',alignItems:'center',gap:12,marginBottom: i<yoyData.length-1?14:0}}>
+            <div key={d.year} style={{display:'flex',alignItems:'center',gap:12,marginBottom:i<yoyData.length-1?14:0}}>
               <div style={{fontSize:11,fontWeight:700,color:d.isCurrent?'#2d5a45':'#9a9080',width:48,flexShrink:0}}>{d.year}</div>
+              {/* Stacked bar: paid (dark) + pending (light) */}
               <div style={{flex:1,height:10,background:'#f0ece4',borderRadius:3,overflow:'hidden',display:'flex'}}>
-                {/* Stacked: paid (dark) + outstanding (light) */}
-                <div style={{
-                  height:'100%',
-                  width:`${(d.paid/maxYoy)*100}%`,
-                  background: d.isCurrent ? '#2d5a45' : `rgba(45,90,69,${0.3+i*0.18})`,
-                  transition:'width .6s cubic-bezier(.4,0,.2,1)',
-                }}/>
-                <div style={{
-                  height:'100%',
-                  width:`${((d.rev-d.paid)/maxYoy)*100}%`,
-                  background: '#c8e0d0',
-                  transition:'width .6s cubic-bezier(.4,0,.2,1)',
-                }}/>
+                <div style={{height:'100%',width:`${(d.paid/maxYoy)*100}%`,background:d.isCurrent?'#2d5a45':`rgba(45,90,69,${0.3+i*0.18})`,transition:'width .6s cubic-bezier(.4,0,.2,1)'}}/>
+                <div style={{height:'100%',width:`${((d.rev-d.paid)/maxYoy)*100}%`,background:'#c8e0d0',transition:'width .6s cubic-bezier(.4,0,.2,1)'}}/>
               </div>
               <div style={{fontSize:11,fontWeight:700,color:'#1a2e22',width:68,textAlign:'right',flexShrink:0,fontVariantNumeric:'tabular-nums'}}>{fmtK(d.rev)}</div>
               <div style={{fontSize:10,color:'#b0a898',width:28,textAlign:'right',flexShrink:0}}>{d.count}×</div>
@@ -347,11 +314,12 @@ export default function Dashboard() {
         </div>
 
         {/* Desktop table */}
-        <div className="db-recent-desktop">
+        <div className="db-recent-tbl">
           <table className="tbl" style={{margin:0,border:'none',borderRadius:0}}>
             <thead>
               <tr>
-                <th>Invoice #</th><th>Client</th><th>Issued</th><th>Pay Date</th>
+                <th>Invoice #</th><th>Client</th><th>Issued</th>
+                <th>Due / Paid Date</th>
                 <th className="tc-right">Amount</th><th className="tc-right">Status</th>
               </tr>
             </thead>
@@ -366,6 +334,8 @@ export default function Dashboard() {
                   <td className="fs-12">
                     {inv.status === 'paid' && inv.due_date
                       ? <span style={{color:'var(--green-text)',fontWeight:600}}>{fmtDFull(inv.due_date)}</span>
+                      : inv.status === 'sent' && inv.due_date
+                      ? <span style={{color:'var(--amber)'}}>{fmtDFull(inv.due_date)}</span>
                       : <span style={{color:'var(--text-muted)'}}>—</span>}
                   </td>
                   <td className="tc-amt">{fmt(inv.total)}</td>
@@ -376,10 +346,12 @@ export default function Dashboard() {
           </table>
         </div>
 
-        {/* Mobile recent list */}
-        <div className="db-recent-mobile">
+        {/* Mobile card list */}
+        <div className="db-recent-cards">
           {allInvoices.slice(0,5).map(inv => (
-            <div key={inv.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',borderBottom:'1px solid #f5f2ec',cursor:'pointer',gap:12}} onClick={() => navigate(`/invoices/${inv.id}`)}>
+            <div key={inv.id}
+              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',borderBottom:'1px solid #f5f2ec',cursor:'pointer',gap:12}}
+              onClick={() => navigate(`/invoices/${inv.id}`)}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:12,fontWeight:600,color:'#1a2e22',marginBottom:2}}>{inv.clients?.name||'—'}</div>
                 <div style={{fontSize:10,color:'#9a9080',fontFamily:'monospace'}}>{inv.invoice_number} · {fmtDFull(inv.invoice_date)}</div>
@@ -401,75 +373,56 @@ const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Sora:wght@700;800&display=swap');
 
   @keyframes dbBarGrow {
-    from { transform: scaleY(0); transform-origin: bottom; }
-    to   { transform: scaleY(1); transform-origin: bottom; }
+    from { transform:scaleY(0); transform-origin:bottom; }
+    to   { transform:scaleY(1); transform-origin:bottom; }
   }
   .db-bar-anim { animation: dbBarGrow .35s cubic-bezier(.4,0,.2,1) both; }
 
-  /* KPI grid */
-  .db-kpi-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 14px;
-    margin-bottom: 18px;
-  }
-  .db-kpi-card {
-    background: #fff;
-    border: 1px solid #e8e4dc;
-    border-radius: 12px;
-    padding: 14px 16px;
-  }
-  .db-kpi-card.db-kpi-hero { background: #2d5a45; border: none; }
+  .db-kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px; }
+  .db-kpi-card { background:#fff; border:1px solid #e8e4dc; border-radius:12px; padding:14px 16px; }
+  .db-hero     { background:#2d5a45; border:none; }
   .db-kpi-label { font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#9a9080; margin-bottom:8px; }
-  .db-kpi-val   { font-family:"'Sora',sans-serif"; font-size:22px; font-weight:800; color:#1a2e22; line-height:1; }
+  .db-kpi-val   { font-family:'Sora',sans-serif; font-size:22px; font-weight:800; color:#1a2e22; line-height:1; }
   .db-kpi-sub   { font-size:11px; color:#9a9080; margin-top:5px; }
 
-  /* Mid/bottom layout */
   .db-mid-grid    { display:grid; grid-template-columns:1fr 280px; gap:16px; margin-bottom:18px; }
   .db-bottom-grid { display:grid; grid-template-columns:1fr 1fr;   gap:16px; margin-bottom:18px; }
-  .db-card { background:#fff; border:1px solid #e8e4dc; border-radius:12px; padding:20px 22px; }
-  .db-card-title { font-family:"'Sora',sans-serif"; font-size:13px; font-weight:700; color:#1a2e22; margin-bottom:16px; }
+  .db-card        { background:#fff; border:1px solid #e8e4dc; border-radius:12px; padding:20px 22px; }
+  .db-card-title  { font-family:'Sora',sans-serif; font-size:13px; font-weight:700; color:#1a2e22; margin-bottom:16px; }
 
-  /* Chart */
   .db-chart-top { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:18px; gap:12px; flex-wrap:wrap; }
-  .db-year-tabs { display:flex; gap:3; background:#f5f2ec; border-radius:8px; padding:3px; flex-shrink:0; }
+  .db-year-tabs { display:flex; gap:3px; background:#f5f2ec; border-radius:8px; padding:3px; flex-shrink:0; }
   .db-year-tab  { font-size:11px; font-weight:600; color:#7a8070; padding:4px 10px; border-radius:6px; border:none; background:none; cursor:pointer; }
   .db-year-tab.active { background:#fff; color:#2d5a45; box-shadow:0 1px 4px rgba(0,0,0,.08); }
 
-  /* Stacked bar */
-  .db-bars-wrap { display:flex; align-items:flex-end; gap:5px; height:90px; }
-  .db-bar-col   { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
-  .db-bar-stack-wrap { width:100%; display:flex; align-items:flex-end; height:72px; }
-  .db-bar-stack { width:100%; display:flex; flex-direction:column; justify-content:flex-end; }
-  .db-bar-segment { width:100%; }
-  .db-bar-segment:first-child { border-radius:3px 3px 0 0; }
+  .db-bars-wrap     { display:flex; align-items:flex-end; gap:5px; height:90px; }
+  .db-bar-col       { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .db-bar-stack-wrap{ width:100%; display:flex; align-items:flex-end; height:72px; }
   .db-bar-lbl { font-size:9px; color:#b0a898; font-weight:600; letter-spacing:.04em; }
   .db-bar-amt { font-size:8px; color:#7a8070; }
 
-  /* Summary rows */
   .db-hst-row { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #f0ece4; }
   .db-hst-lbl { font-size:11px; color:#7a8070; }
   .db-hst-val { font-size:12px; font-weight:700; color:#1a2e22; font-variant-numeric:tabular-nums; }
 
-  /* Recent table vs mobile */
-  .db-recent-desktop { display:block; }
-  .db-recent-mobile  { display:none; }
+  .db-recent-tbl   { display:block; }
+  .db-recent-cards { display:none; }
 
-  /* ── RESPONSIVE ─────────────────────────────────────── */
+  /* ── RESPONSIVE ───────────────────────────────────────── */
   @media (max-width: 900px) {
     .db-mid-grid    { grid-template-columns: 1fr; }
     .db-bottom-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 600px) {
-    .db-kpi-grid { grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:14px; }
-    .db-kpi-val  { font-size:17px; }
-    .db-card     { padding:14px 16px; }
-    .db-recent-desktop { display:none; }
-    .db-recent-mobile  { display:block; }
+    .db-kpi-grid  { grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:14px; }
+    .db-kpi-val   { font-size:17px; }
+    .db-card      { padding:14px 16px; }
     .db-bars-wrap { gap:3px; }
     .db-bar-lbl   { font-size:8px; }
     .db-bar-amt   { display:none; }
+    .db-recent-tbl   { display:none; }
+    .db-recent-cards { display:block; }
   }
 
   @media (max-width: 380px) {

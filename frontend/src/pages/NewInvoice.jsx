@@ -52,8 +52,11 @@ export default function NewInvoice() {
   const [invNum, setInvNum]               = useState('')
   const [lines, setLines]                 = useState([])
   const [invStatus, setInvStatus]         = useState('draft')
-  const [paymentDate, setPaymentDate]     = useState('') // due_date reused as payment_received_date
-  const [savingPayDate, setSavingPayDate] = useState(false)
+
+  // due_date: null for draft, due date for sent, payment received date for paid
+  const [dueDate, setDueDate]             = useState('')
+  const [savingDueDate, setSavingDueDate] = useState(false)
+
   const [driveFileId, setDriveFileId]     = useState(null)
   const [driveFileUrl, setDriveFileUrl]   = useState(null)
   const [driveUploadedAt, setDriveUploadedAt] = useState(null)
@@ -87,14 +90,15 @@ export default function NewInvoice() {
     if (id) {
       const { data: inv } = await supabase.from('invoices').select('*, invoice_lines(*)').eq('id', id).single()
       if (inv) {
-        setClientId(inv.client_id); setInvDate(inv.invoice_date); setInvNum(inv.invoice_number)
+        setClientId(inv.client_id)
+        setInvDate(inv.invoice_date)
+        setInvNum(inv.invoice_number)
         setInvStatus(inv.status)
         setLines(inv.invoice_lines?.sort((a,b)=>a.sort_order-b.sort_order)||[])
         setDriveFileId(inv.drive_file_id||null)
         setDriveFileUrl(inv.drive_file_url||null)
         setDriveUploadedAt(inv.drive_uploaded_at||null)
-        // due_date = payment_received_date when paid
-        setPaymentDate(inv.due_date || '')
+        setDueDate(inv.due_date || '')
       }
     } else {
       if (cl?.length) { setClientId(cl[0].id); await prefill(cl[0], user.id) }
@@ -139,16 +143,24 @@ export default function NewInvoice() {
     if (!lines.length) { setError('Add at least one billing line.'); return }
     setSaving(true); setError(null)
 
-    // due_date = payment date if paid, else calculate from terms
-    const dueDate = status === 'paid' && paymentDate
-      ? paymentDate
-      : toISO(new Date(new Date(invDate).getTime() + pmtDays * 86400000))
+    // due_date lifecycle:
+    //   draft → null (no due date yet)
+    //   sent  → keep existing due_date if already set, else calculate from terms
+    //   (paid is handled separately via Mark Paid modal on the list page)
+    let dueDateVal = null
+    if (status === 'sent') {
+      dueDateVal = dueDate || toISO(new Date(new Date(invDate).getTime() + pmtDays * 86400000))
+    } else if (status === 'paid') {
+      // If saving directly as paid from edit mode (unusual), keep existing due_date
+      dueDateVal = dueDate || null
+    }
 
-    const payload={
+    const payload = {
       user_id:user.id, client_id:clientId, invoice_number:invNum,
       invoice_year:new Date(invDate).getFullYear(),
       sequence_number:parseInt(invNum.replace(/\D/g,'').slice(4))||1,
-      invoice_date:invDate, due_date:dueDate,
+      invoice_date:invDate,
+      due_date: dueDateVal,
       subtotal, hst_rate:hstRate, hst_amount:hstAmt, total, total_hours:totHours,
       status, updated_at:new Date().toISOString(),
     }
@@ -165,9 +177,9 @@ export default function NewInvoice() {
       lines.map((l,i)=>({invoice_id:invId, user_id:user.id, period_from:l.period_from, period_to:l.period_to, hours:+l.hours, hourly_rate:+l.hourly_rate, sort_order:i}))
     )
     setSaving(false)
-
     if (id) {
       setInvStatus(status)
+      if (status === 'sent' && dueDateVal) setDueDate(dueDateVal)
       setEditMode(false)
       if (driveFileId) setShowReupload(true)
     } else {
@@ -175,15 +187,15 @@ export default function NewInvoice() {
     }
   }
 
-  // Save payment date change in-place (from view mode)
+  // Update payment received date in-place (when status = paid, from view mode)
   async function savePaymentDate(newDate) {
-    setSavingPayDate(true)
+    setSavingDueDate(true)
     await supabase.from('invoices').update({
       due_date: newDate,
       updated_at: new Date().toISOString(),
     }).eq('id', id)
-    setPaymentDate(newDate)
-    setSavingPayDate(false)
+    setDueDate(newDate)
+    setSavingDueDate(false)
   }
 
   async function handleDeleteInvoice() {
@@ -197,7 +209,6 @@ export default function NewInvoice() {
     if (!settings.drive_refresh_token) { setDriveError('Drive not connected. Go to Settings.'); return }
     if (!settings.drive_folder_id)     { setDriveError('No Drive folder set. Go to Settings.'); return }
     if (!clientId || !lines.length)    { setDriveError('Complete the invoice first.'); return }
-
     setSavingToDrive(true); setDriveError(null); setDriveSuccess(null); setShowReupload(false)
     try {
       const el = hiddenTemplateRef.current
@@ -206,56 +217,31 @@ export default function NewInvoice() {
       const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
       pdf.addImage(canvas.toDataURL('image/jpeg', 0.97), 'JPEG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight())
       const pdfBlob = pdf.output('arraybuffer')
-
       if (overrideFileId) {
         try {
-          const accessToken = await getAccessToken(settings.drive_refresh_token)
-          await fetch(`https://www.googleapis.com/drive/v3/files/${overrideFileId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
+          const at = await getAccessToken(settings.drive_refresh_token)
+          await fetch(`https://www.googleapis.com/drive/v3/files/${overrideFileId}`,{ method:'DELETE', headers:{ Authorization:`Bearer ${at}` }})
         } catch(e) { /* ignore */ }
       }
-
-      const result = await driveUpload({
-        refreshToken: settings.drive_refresh_token,
-        folderId:     settings.drive_folder_id,
-        fileName:     `${invNum}.pdf`,
-        pdfBlob,
-      })
-
+      const result = await driveUpload({ refreshToken:settings.drive_refresh_token, folderId:settings.drive_folder_id, fileName:`${invNum}.pdf`, pdfBlob })
       const now = new Date().toISOString()
       if (id) {
-        await supabase.from('invoices').update({
-          drive_file_id:    result.id,
-          drive_file_url:   result.webViewLink,
-          drive_uploaded_at:now,
-        }).eq('id', id)
-        setDriveFileId(result.id)
-        setDriveFileUrl(result.webViewLink)
-        setDriveUploadedAt(now)
+        await supabase.from('invoices').update({ drive_file_id:result.id, drive_file_url:result.webViewLink, drive_uploaded_at:now }).eq('id', id)
+        setDriveFileId(result.id); setDriveFileUrl(result.webViewLink); setDriveUploadedAt(now)
       }
       setDriveSuccess(result.webViewLink)
     } catch(e) {
       if (e.message?.includes('invalid_grant')) {
         await supabase.from('settings').update({ drive_connected:false, drive_refresh_token:null }).eq('user_id', user.id)
         setDriveError('Drive connection expired. Please reconnect in Settings.')
-      } else {
-        setDriveError(e.message || 'Upload failed')
-      }
-    } finally {
-      setSavingToDrive(false)
-    }
+      } else { setDriveError(e.message || 'Upload failed') }
+    } finally { setSavingToDrive(false) }
   }
 
   if (loading) return <PageShell crumb="Rapidmatix" title="Invoice"><Spinner /></PageShell>
 
-  const invoiceData = {
-    invoice_number:invNum, invoice_date:invDate,
-    due_date: paymentDate || toISO(new Date(new Date(invDate).getTime()+pmtDays*86400000)),
-    hst_rate:hstRate,
-  }
-  const driveReady = settings.drive_connected && settings.drive_folder_id && clientId && lines.length > 0
+  const invoiceData = { invoice_number:invNum, invoice_date:invDate, due_date:dueDate||null, hst_rate:hstRate }
+  const driveReady  = settings.drive_connected && settings.drive_folder_id && clientId && lines.length > 0
 
   /* ══════════════════════════════════════════════════════
      VIEW MODE
@@ -265,22 +251,18 @@ export default function NewInvoice() {
       <PageShell
         crumb="Rapidmatix" title={invNum}
         actions={
-          <div className="ni-toolbar-actions">
-            {/* Save to Drive */}
+          <div className="ni-actions">
             <button
               onClick={() => handleSaveToDrive(driveFileId||null)}
               disabled={savingToDrive || !driveReady}
-              title={!settings.drive_connected?'Connect Drive in Settings':!settings.drive_folder_id?'Set folder in Settings':''}
-              style={{display:'inline-flex',alignItems:'center',gap:7,padding:'7px 14px',borderRadius:8,border:'1.5px solid var(--border)',background:'var(--white)',cursor:(!driveReady||savingToDrive)?'default':'pointer',fontSize:12,fontWeight:600,fontFamily:'Inter,sans-serif',color:driveReady?'var(--text-primary)':'var(--text-muted)',opacity:driveReady?1:.55,transition:'all .12s',whiteSpace:'nowrap'}}
+              style={{display:'inline-flex',alignItems:'center',gap:7,padding:'7px 14px',borderRadius:8,border:'1.5px solid var(--border)',background:'var(--white)',cursor:(!driveReady||savingToDrive)?'default':'pointer',fontSize:12,fontWeight:600,fontFamily:'Inter,sans-serif',color:driveReady?'var(--text-primary)':'var(--text-muted)',opacity:driveReady?1:.55,whiteSpace:'nowrap'}}
               onMouseEnter={e=>{ if(driveReady&&!savingToDrive){e.currentTarget.style.borderColor='var(--sage-dark)';e.currentTarget.style.background='var(--sage-pale)'}}}
               onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--white)'}}
             >
-              {savingToDrive?(
-                <><div style={{width:13,height:13,border:'2px solid var(--linen-dark)',borderTopColor:'var(--sage-dark)',borderRadius:'50%',animation:'spin .7s linear infinite'}}/> Uploading…</>
-              ):(
-                <><svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/></svg>
-                {driveFileId ? 'Re-upload' : 'Save to Drive'}</>
-              )}
+              {savingToDrive
+                ? <><div style={{width:13,height:13,border:'2px solid var(--linen-dark)',borderTopColor:'var(--sage-dark)',borderRadius:'50%',animation:'spin .7s linear infinite'}}/> Uploading…</>
+                : <><svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/></svg>
+                {driveFileId ? 'Re-upload' : 'Save to Drive'}</>}
             </button>
             <Button variant="ghost" onClick={() => setShowPreview(true)}>Preview PDF</Button>
             <Button variant="primary" onClick={() => { setEditMode(true); setShowReupload(false) }}>Edit Invoice</Button>
@@ -288,59 +270,54 @@ export default function NewInvoice() {
           </div>
         }
       >
-        <style>{`
-          @keyframes spin{to{transform:rotate(360deg)}}
-          .ni-toolbar-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-          .ni-meta-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
-          .ni-meta-item { padding:10px 0; border-bottom:1px solid var(--border-light); }
-          .ni-meta-label { font-size:10px; font-weight:700; color:var(--text-muted); letter-spacing:.1em; text-transform:uppercase; margin-bottom:4px; }
-          .ni-meta-val { font-size:13px; color:var(--text-primary); font-weight:500; }
-          .ni-lines-wrap { overflow-x:auto; }
-          @media(max-width:640px){
-            .ni-meta-grid { grid-template-columns:1fr; }
-            .ni-toolbar-actions { gap:6px; }
-            .ni-toolbar-actions button, .ni-toolbar-actions a { font-size:11px; padding:6px 10px; }
-          }
-        `}</style>
+        <style>{NI_CSS}</style>
 
-        {driveError   && <div className="alert-error">{driveError}</div>}
-        {driveSuccess  && (
+        {driveError  && <div className="alert-error">{driveError}</div>}
+        {driveSuccess && (
           <div className="alert-success" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <span>✓ Saved to Google Drive</span>
             <a href={driveSuccess} target="_blank" rel="noopener noreferrer" style={{fontSize:12,fontWeight:600,color:'var(--green-text)'}}>Open →</a>
           </div>
         )}
 
-        {/* Invoice summary card */}
+        {/* Summary card */}
         <div className="card">
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16,flexWrap:'wrap',gap:8}}>
             <div>
               <div style={{fontFamily:"'Sora',sans-serif",fontSize:20,fontWeight:700,color:'var(--text-primary)',marginBottom:4}}>{invNum}</div>
-              <div style={{fontSize:13,color:'var(--text-muted)'}}>{client?.name || '—'}{client?.consulting_client ? ` · ${client.consulting_client}` : ''}</div>
+              <div style={{fontSize:13,color:'var(--text-muted)'}}>{client?.name||'—'}{client?.consulting_client?` · ${client.consulting_client}`:''}</div>
             </div>
             <span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,padding:'4px 10px',borderRadius:99,...(PILL[invStatus]||{})}}>
-              <span style={{width:5,height:5,borderRadius:'50%',background:'currentColor',opacity:.8}}/>
-              {invStatus}
+              <span style={{width:5,height:5,borderRadius:'50%',background:'currentColor',opacity:.8}}/>{invStatus}
             </span>
           </div>
 
           <div className="ni-meta-grid">
             {[
-              ['Invoice Date', fmtD(invDate)],
-              ['Invoice Number', invNum],
-              ['Rate', rate ? `${fmtM(rate)} / hr` : '—'],
-              ['Payment Terms', `Net ${pmtDays} days`],
+              ['Invoice Date',    fmtD(invDate)],
+              ['Invoice Number',  invNum],
+              ['Rate',            rate ? `${fmtM(rate)} / hr` : '—'],
+              ['Payment Terms',   `Net ${pmtDays} days`],
             ].map(([l,v]) => (
-              <div key={l} className="ni-meta-item">
-                <div className="ni-meta-label">{l}</div>
-                <div className="ni-meta-val">{v}</div>
+              <div key={l} style={{padding:'10px 0',borderBottom:'1px solid var(--border-light)'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:4}}>{l}</div>
+                <div style={{fontSize:13,color:'var(--text-primary)',fontWeight:500}}>{v}</div>
               </div>
             ))}
           </div>
 
-          {/* Payment Received Date — editable in view mode when paid */}
+          {/* Due date (sent) or Payment received date (paid) */}
+          {invStatus === 'sent' && dueDate && (
+            <div style={{marginTop:14,padding:'10px 14px',background:'var(--amber-pale)',border:'1px solid var(--amber-border)',borderRadius:'var(--radius-md)',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+              <div>
+                <div style={{fontSize:10,fontWeight:700,color:'var(--amber)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:2}}>Payment Due</div>
+                <div style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{fmtD(dueDate)}</div>
+              </div>
+            </div>
+          )}
+
           {invStatus === 'paid' && (
-            <div style={{marginTop:16,padding:'12px 16px',background:'var(--green-pale)',border:'1px solid var(--green-border)',borderRadius:'var(--radius-md)'}}>
+            <div style={{marginTop:14,padding:'12px 16px',background:'var(--green-pale)',border:'1px solid var(--green-border)',borderRadius:'var(--radius-md)'}}>
               <div style={{fontSize:10,fontWeight:700,color:'var(--green-text)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:8}}>
                 Payment Received Date
               </div>
@@ -348,24 +325,22 @@ export default function NewInvoice() {
                 <input
                   type="date"
                   className="fi"
-                  value={paymentDate}
+                  value={dueDate}
                   max={toISO(new Date())}
-                  onChange={e => setPaymentDate(e.target.value)}
+                  onChange={e => setDueDate(e.target.value)}
                   style={{maxWidth:180,flex:'0 0 auto'}}
                 />
-                <Button variant="ghost" size="sm"
-                  disabled={savingPayDate || !paymentDate}
-                  onClick={() => savePaymentDate(paymentDate)}>
-                  {savingPayDate ? 'Saving…' : 'Update'}
+                <Button variant="ghost" size="sm" disabled={savingDueDate||!dueDate} onClick={() => savePaymentDate(dueDate)}>
+                  {savingDueDate ? 'Saving…' : 'Update'}
                 </Button>
-                <span style={{fontSize:11,color:'var(--green-text)'}}>Date money arrived in your bank account</span>
+                <span style={{fontSize:11,color:'var(--green-text)'}}>Date money arrived in your bank</span>
               </div>
             </div>
           )}
 
           {/* Drive status */}
           {driveFileId && (
-            <div style={{marginTop:16,padding:'10px 14px',background:'#f0faf4',border:'1px solid #c8e6d4',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+            <div style={{marginTop:14,padding:'10px 14px',background:'#f0faf4',border:'1px solid #c8e6d4',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <svg width="14" height="14" viewBox="0 0 87.3 78" fill="none"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00ac47"/><path d="M60 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.5c1.6 0 3.15-.45 4.5-1.2L60 53z" fill="#2684fc"/></svg>
                 <div>
@@ -378,7 +353,7 @@ export default function NewInvoice() {
           )}
         </div>
 
-        {/* Billing lines (read-only) */}
+        {/* Billing lines */}
         <div className="tbl-wrap ni-lines-wrap">
           <table className="tbl">
             <thead>
@@ -402,7 +377,7 @@ export default function NewInvoice() {
           </table>
         </div>
 
-        {/* Totals (read-only) */}
+        {/* Totals */}
         <div className="card">
           <div className="totals-panel" style={{flexWrap:'wrap',gap:16}}>
             <div className="totals-meta">
@@ -419,7 +394,6 @@ export default function NewInvoice() {
           </div>
         </div>
 
-        {/* Hidden template for Drive upload */}
         {driveReady && (
           <div style={{position:'fixed',left:'-9999px',top:0,pointerEvents:'none',opacity:0}}>
             <div ref={hiddenTemplateRef}>
@@ -430,7 +404,6 @@ export default function NewInvoice() {
 
         {showPreview && <InvoicePreviewModal invoice={invoiceData} settings={settings} client={client} lines={lines} onClose={()=>setShowPreview(false)}/>}
 
-        {/* Delete modal */}
         {deleteModal && (
           <div className="modal-overlay" onClick={() => setDeleteModal(false)}>
             <div className="modal" style={{maxWidth:400}} onClick={e => e.stopPropagation()}>
@@ -464,7 +437,7 @@ export default function NewInvoice() {
     <PageShell
       crumb="Rapidmatix" title={isNew ? 'New Invoice' : `Edit · ${invNum}`}
       actions={
-        <div className="ni-toolbar-actions">
+        <div className="ni-actions">
           {!isNew && <Button variant="ghost" onClick={() => { setEditMode(false); setError(null) }}>Cancel</Button>}
           <Button variant="ghost" onClick={() => setShowPreview(true)} disabled={!clientId||!lines.length}>Preview PDF</Button>
           <Button variant="ghost" onClick={() => save('draft')} disabled={saving}>Save Draft</Button>
@@ -472,31 +445,18 @@ export default function NewInvoice() {
         </div>
       }
     >
-      <style>{`
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .ni-toolbar-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-        .ni-lines-wrap { overflow-x:auto; }
-        @media(max-width:640px){
-          .ni-toolbar-actions { gap:6px; }
-          .ni-toolbar-actions button { font-size:11px; padding:6px 10px; }
-        }
-      `}</style>
-
+      <style>{NI_CSS}</style>
       {error && <div className="alert-error">{error}</div>}
 
       {showReupload && (
         <div style={{padding:'12px 16px',background:'#fef3e2',border:'1px solid #f0d8a0',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
           <div>
             <div style={{fontSize:13,fontWeight:600,color:'#9a6010'}}>Invoice updated</div>
-            <div style={{fontSize:11,color:'#7a6040',marginTop:2}}>This invoice was previously saved to Drive. Re-upload to replace the old PDF.</div>
+            <div style={{fontSize:11,color:'#7a6040',marginTop:2}}>Previously saved to Drive. Re-upload to replace the old PDF.</div>
           </div>
           <div className="flex gap-8">
             <Button variant="ghost" size="sm" onClick={() => setShowReupload(false)}>Dismiss</Button>
-            <button
-              onClick={() => handleSaveToDrive(driveFileId)}
-              disabled={savingToDrive}
-              style={{display:'inline-flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:7,border:'none',background:'#c07820',color:'#fff',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}
-            >
+            <button onClick={() => handleSaveToDrive(driveFileId)} disabled={savingToDrive} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:7,border:'none',background:'#c07820',color:'#fff',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
               {savingToDrive?'Uploading…':'Re-upload to Drive'}
             </button>
           </div>
@@ -542,7 +502,9 @@ export default function NewInvoice() {
                 <td><input type="number" className="fi" value={l.hours} min="0" step="1" onChange={e=>updLine(i,'hours',e.target.value)}/></td>
                 <td><input type="number" className="fi" value={l.hourly_rate} min="0" step="0.01" onChange={e=>updLine(i,'hourly_rate',e.target.value)}/></td>
                 <td className="tc-amt">{fmtM(+l.hours * +l.hourly_rate)}</td>
-                <td className="tc-center"><button style={{background:'none',border:'none',color:'var(--red-text)',fontSize:16,cursor:'pointer',lineHeight:1,padding:'0 4px'}} onClick={()=>setLines(ls=>ls.filter((_,j)=>j!==i))} title="Remove">×</button></td>
+                <td className="tc-center">
+                  <button style={{background:'none',border:'none',color:'var(--red-text)',fontSize:16,cursor:'pointer',lineHeight:1,padding:'0 4px'}} onClick={()=>setLines(ls=>ls.filter((_,j)=>j!==i))} title="Remove">×</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -589,7 +551,6 @@ function DriveTemplate({ invoice, settings, client, lines, subtotal, hstAmt, tot
   const contractor=settings?.contractor_name||'Niket Agrawal'
   const addrParts=(settings?.address||'').split(',').map(s=>s.trim()).filter(Boolean)
   const pmtDays=client?.payment_terms_days||15
-
   return (
     <div style={{width:794,height:1123,background:'#fff',fontFamily:"'Inter','Helvetica Neue',Arial,sans-serif",color:'#1a2e22',display:'flex',flexDirection:'column',boxSizing:'border-box',overflow:'hidden'}}>
       <div style={{background:SAGE,padding:'28px 44px',display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
@@ -602,7 +563,7 @@ function DriveTemplate({ invoice, settings, client, lines, subtotal, hstAmt, tot
           <div style={{fontFamily:"'Sora',serif",fontSize:15,fontWeight:700,color:'#fff'}}>{invoice.invoice_number}</div>
         </div>
       </div>
-      <div style={{display:'flex',padding:'28px 44px 20px',gap:0}}>
+      <div style={{display:'flex',padding:'28px 44px 20px'}}>
         <div style={{flex:1}}>
           <div style={{marginBottom:18}}>
             <div style={{fontSize:9,fontWeight:700,color:'#a89e90',letterSpacing:'.18em',textTransform:'uppercase',borderBottom:`1px solid ${BORDER}`,paddingBottom:5,marginBottom:8}}>FROM</div>
@@ -682,3 +643,14 @@ function DriveTemplate({ invoice, settings, client, lines, subtotal, hstAmt, tot
     </div>
   )
 }
+
+const NI_CSS = `
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ni-actions   { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .ni-lines-wrap { overflow-x:auto; }
+  .ni-meta-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+  @media(max-width:640px){
+    .ni-actions button, .ni-actions a { font-size:11px !important; padding:6px 10px !important; }
+    .ni-meta-grid { grid-template-columns:1fr; }
+  }
+`

@@ -13,7 +13,7 @@ const NAV = [
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="2" y="1" width="12" height="14" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="8" y2="11"/></svg>,
   },
   {
-    to: '/invoices/new', label: 'New Invoice',
+    to: '/invoices/new', label: 'New',
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="5" y1="8" x2="11" y2="8"/></svg>,
   },
   {
@@ -43,19 +43,18 @@ export default function Layout() {
 
   return (
     <div className={styles.shell}>
-      {/* ── Sidebar ── */}
+
+      {/* ── Desktop Sidebar ── */}
       <aside
         className={`${styles.sidebar} ${expanded ? styles.expanded : ''}`}
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
       >
-        {/* Logo */}
         <div className={styles.logo}>
           <div className={styles.logoMark}>R</div>
           <span className={styles.logoText}>Rapidmatix</span>
         </div>
 
-        {/* Nav items */}
         <nav className={styles.nav}>
           {NAV.map(item => (
             <NavLink
@@ -71,7 +70,6 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Bottom — avatar + sign out */}
         <div className={styles.bottom}>
           <div className={styles.userRow}>
             <div className={styles.avatarWrap}>
@@ -100,6 +98,23 @@ export default function Layout() {
       <main className={styles.main}>
         <Outlet />
       </main>
+
+      {/* ── Mobile Bottom Tab Bar ── */}
+      <nav className={styles.mobileNav}>
+        {NAV.map(item => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === '/invoices'}
+            className={({ isActive }) =>
+              `${styles.mobileTab} ${isActive ? styles.mobileTabActive : ''} ${item.to === '/invoices/new' ? styles.mobileTabNew : ''}`
+            }
+          >
+            <span className={styles.mobileTabIcon}>{item.icon}</span>
+            <span className={styles.mobileTabLabel}>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
     </div>
   )
 }
